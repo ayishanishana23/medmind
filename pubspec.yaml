@@ -57,6 +57,9 @@ dependencies:
 
   # Splash Screen (Keep dev dependency for this)
   flutter_native_splash: ^2.3.6
+  shared_preferences: ^2.0.1
+  url_launcher: ^6.3.0
+
 
 
 dev_dependencies:
