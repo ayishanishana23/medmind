@@ -46,10 +46,44 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     "Night": "21:00",
   };
 
+  // Multi-profile
+  bool _multiProfileEnabled = false;
+  List<Map<String, dynamic>> _profiles = [];
+  Map<String, dynamic>? _selectedProfile;
+
   @override
   void initState() {
     super.initState();
+    _loadUserProfiles();
     if (widget.medicine != null) _loadMedicineForEdit();
+  }
+
+  Future<void> _loadUserProfiles() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final userSnap =
+    await FirebaseFirestore.instance.collection("users").doc(user.uid).get();
+    _multiProfileEnabled = userSnap.data()?['multiProfileEnabled'] ?? false;
+
+    if (_multiProfileEnabled) {
+      final profilesSnap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('profiles')
+          .get();
+
+      _profiles = profilesSnap.docs.map((doc) {
+        final data = doc.data();
+        data['id'] = doc.id;
+        return data;
+      }).toList();
+
+      // default selection
+      if (_profiles.isNotEmpty) _selectedProfile = _profiles[0];
+    }
+
+    setState(() {});
   }
 
   void _loadMedicineForEdit() {
@@ -63,6 +97,12 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     expiryDate = med.expiryDate;
     selectedTimes = med.times.map((e) => Map<String, String>.from(e)).toList();
     existingImageUrl = med.imageUrl;
+
+    // Set selected profile if editing medicine
+    if (_multiProfileEnabled && _profiles.isNotEmpty) {
+      _selectedProfile =
+          _profiles.firstWhere((p) => p['id'] == med.profileId, orElse: () => _profiles[0]);
+    }
   }
 
   @override
@@ -113,11 +153,8 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     );
     if (picked != null) {
       setState(() {
-        if (isStart) {
-          startDate = picked;
-        } else {
-          endDate = picked;
-        }
+        if (isStart) startDate = picked;
+        else endDate = picked;
       });
     }
   }
@@ -145,7 +182,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     selectedTimes.add({
       'label': 'Custom',
       'time': timeStr,
-      'beforeAfter': 'After', // Default selection
+      'beforeAfter': 'After',
     });
     setState(() {});
   }
@@ -159,19 +196,22 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         selectedTimes.add({
           'label': label,
           'time': _presetTimes[label]!,
-          'beforeAfter': 'After', // Default selection
+          'beforeAfter': 'After',
         });
       });
     }
   }
 
   Future<String> _uploadImageAndGetUrl(String uid, String docId) async {
-    if (_pickedImageFile == null && _pickedImageBytes == null && existingImageUrl != null) {
+    if (_pickedImageFile == null &&
+        _pickedImageBytes == null &&
+        existingImageUrl != null) {
       return existingImageUrl!;
     }
     if (_pickedImageFile == null && _pickedImageBytes == null) return '';
 
-    final ref = FirebaseStorage.instance.ref().child('users/$uid/medicines/$docId.jpg');
+    final ref =
+    FirebaseStorage.instance.ref().child('users/$uid/medicines/$docId.jpg');
     if (kIsWeb) {
       await ref.putData(_pickedImageBytes!, SettableMetadata(contentType: 'image/jpeg'));
     } else {
@@ -201,7 +241,11 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
       final uid = FirebaseAuth.instance.currentUser!.uid;
       final isEdit = widget.medicine != null;
       final docRef = isEdit
-          ? FirebaseFirestore.instance.collection("users").doc(uid).collection("medicines").doc(widget.medicine!.id)
+          ? FirebaseFirestore.instance
+          .collection("users")
+          .doc(uid)
+          .collection("medicines")
+          .doc(widget.medicine!.id)
           : FirebaseFirestore.instance.collection("users").doc(uid).collection("medicines").doc();
 
       final imageUrl = await _uploadImageAndGetUrl(uid, docRef.id);
@@ -222,6 +266,8 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         endDate: endDate!,
         expiryDate: expiryDate ?? endDate!,
         active: true,
+        profileId: _selectedProfile?['id'] ?? '',
+        profileName: _selectedProfile?['name'] ?? '',
       );
 
       await docRef.set(med.toMap(), SetOptions(merge: true));
@@ -269,6 +315,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
           key: _formKey,
           child: Column(
             children: [
+              // Avatar
               GestureDetector(
                 onTap: _pickImage,
                 child: CircleAvatar(
@@ -284,17 +331,36 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                   child: (_pickedImageFile == null &&
                       _pickedImageBytes == null &&
                       existingImageUrl == null)
-                      ? const Icon(Icons.camera_alt, color: AppColors.primary, size: 30)
+                      ? const Icon(Icons.camera_alt,
+                      color: AppColors.primary, size: 30)
                       : null,
                 ),
               ),
+
+              // Multi-profile selector
+              if (_multiProfileEnabled && _profiles.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: DropdownButton<Map<String, dynamic>>(
+                    isExpanded: true,
+                    value: _selectedProfile,
+                    items: _profiles.map((p) {
+                      return DropdownMenuItem(
+                        value: p,
+                        child: Text(p['name'] ?? 'No Name'),
+                      );
+                    }).toList(),
+                    onChanged: (val) => setState(() => _selectedProfile = val),
+                  ),
+                ),
+
               const SizedBox(height: 20),
               TextFormField(
                 controller: nameController,
                 decoration: const InputDecoration(labelText: "Medicine Name"),
                 validator: (v) => v == null || v.isEmpty ? "Required" : null,
               ),
-              const SizedBox(height: 12),
+                            const SizedBox(height: 12),
               TextFormField(
                 controller: dosageController,
                 decoration: const InputDecoration(labelText: "Dosage (e.g., 1 tablet)"),
@@ -377,7 +443,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                       ),
                     ),
                   );
-                 }
+                }
                 ),
 
               const Divider(height: 32),
@@ -431,10 +497,20 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                     ? const CircularProgressIndicator(color: Colors.white)
                     : Text(isEdit ? "Update Medicine" : "Add Medicine"),
               ),
-            ],
+
+
+              ],
           ),
         ),
       ),
     );
   }
 }
+
+
+
+
+
+
+
+

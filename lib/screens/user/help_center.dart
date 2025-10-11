@@ -35,12 +35,12 @@ class HelpCenter extends StatelessWidget {
               'Need Help?',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 15),
             const Text(
               'If you are facing any issues or need support, please contact us at:',
               style: TextStyle(fontSize: 16),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 20),
             GestureDetector(
               onTap: _launchEmail,
               child: const Text(
@@ -53,7 +53,7 @@ class HelpCenter extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 30),
             const Text(
               'You can also visit our FAQ section in future updates for quick answers.',
               style: TextStyle(fontSize: 16),

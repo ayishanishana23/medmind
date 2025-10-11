@@ -26,21 +26,18 @@ class PrivacySecurityScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16.0),
         child: ListView(
           children: [
-            const Text(
-              'Privacy & Security',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
+
+            const SizedBox(height: 15),
             const Text(
               'We respect your privacy and protect your data using Firebase Authentication and Firestore security rules.',
               style: TextStyle(fontSize: 16),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
             const Text(
               '🔒 Your personal information is stored securely and never shared with third parties.',
               style: TextStyle(fontSize: 16),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 30),
             GestureDetector(
               onTap: _launchWebsite,
               child: const Text(

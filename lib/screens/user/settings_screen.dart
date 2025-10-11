@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:medmind/screens/user/privacy_security.dart';
 import '../../core/constants.dart';
+import 'help_center.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -60,38 +62,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Settings"),
-        backgroundColor: Colors.transparent,
+        backgroundColor: AppColors.primary,
         elevation: 0,
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          ListTile(
-            leading: const Icon(Icons.group, color: AppColors.primary),
-            title: const Text("Enable Multi-Profile Management"),
-            subtitle: const Text("Manage multiple family profiles under one account"),
-            trailing: Switch(
-              value: _multiProfileEnabled,
+          Card(
+            elevation: 1,
+            child: SwitchListTile(
+              value:_multiProfileEnabled,
               onChanged: _toggleMultiProfile,
+              title: const Text("Enable Multi-Profile"),
+              subtitle: const Text("Manage multiple profiles under one account"),
+              secondary: const Icon(Icons.people, color: AppColors.primary),
             ),
           ),
-          const Divider(),
-          const ListTile(
-            leading: Icon(Icons.lock, color: AppColors.primary),
-            title: Text("Privacy & Security"),
-            subtitle: Text("Manage security settings"),
+          const SizedBox(height: 10),
+
+
+          Card(
+            elevation: 1,
+            child: ListTile(
+              leading: const Icon(Icons.lock, color: AppColors.primary),
+              title: const Text("Privacy & Security"),
+              subtitle: const Text("Manage security settings"),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PrivacySecurityScreen()),
+                );              },
+            ),
           ),
-          const Divider(),
-          const ListTile(
-            leading: Icon(Icons.help_outline, color: AppColors.primary),
-            title: Text("Help Center"),
-            subtitle: Text("Contact or learn more"),
+          const SizedBox(height: 10),
+
+          Card(
+            elevation: 1,
+            child: ListTile(
+              leading: const Icon(Icons.help_outline, color: AppColors.primary),
+              title: const Text("Help Center"),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HelpCenter()),
+                );
+              },
+            ),
           ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.red),
-            title: const Text("Logout", style: TextStyle(color: Colors.red)),
-            onTap: () => _logout(context),
+          const SizedBox(height: 10),
+
+          Card(
+            elevation: 1,
+            child: ListTile(
+              leading: const Icon(Icons.logout, color: Colors.red),
+              title: const Text("Logout", style: TextStyle(color: Colors.red)),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.red),
+              onTap: () => _logout(context),
+            ),
           ),
         ],
       ),

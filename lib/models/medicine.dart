@@ -11,6 +11,10 @@ class Medicine {
   final DateTime expiryDate;
   final bool active;
 
+  // Multi-profile fields
+  final String profileId;
+  final String profileName;
+
   Medicine({
     required this.id,
     required this.name,
@@ -23,6 +27,8 @@ class Medicine {
     required this.endDate,
     required this.expiryDate,
     this.active = true,
+    this.profileId = '',
+    this.profileName = '',
   });
 
   Map<String, dynamic> toMap() {
@@ -37,6 +43,8 @@ class Medicine {
       'endDate': endDate.toIso8601String(),
       'expiryDate': expiryDate.toIso8601String(),
       'active': active,
+      'profileId': profileId,
+      'profileName': profileName,
     };
   }
 
@@ -54,8 +62,11 @@ class Medicine {
       imageUrl: map['imageUrl'],
       startDate: DateTime.tryParse(map['startDate'] ?? '') ?? DateTime.now(),
       endDate: DateTime.tryParse(map['endDate'] ?? '') ?? DateTime.now(),
-      expiryDate: DateTime.tryParse(map['expiryDate'] ?? '') ?? DateTime.now(),
+      expiryDate:
+      DateTime.tryParse(map['expiryDate'] ?? '') ?? DateTime.now(),
       active: map['active'] ?? true,
+      profileId: map['profileId'] ?? '',
+      profileName: map['profileName'] ?? '',
     );
   }
 }
