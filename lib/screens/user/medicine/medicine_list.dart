@@ -18,6 +18,7 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
   String? selectedProfileId;
   List<Map<String, dynamic>> profiles = [];
   bool isLoadingProfiles = true;
+  bool multiProfileEnabled = false; // control flag for multi-profile feature
 
   final uid = FirebaseAuth.instance.currentUser?.uid;
 
@@ -29,16 +30,34 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
 
   Future<void> _loadProfiles() async {
     if (uid == null) return;
-    final snap = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('profiles')
-        .get();
-    profiles = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
 
-    if (profiles.isNotEmpty) {
-      selectedProfileId = profiles.first['id']; // default first profile
+    // Check if multi-profile management is enabled for the user
+    final userDoc =
+    await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    multiProfileEnabled = userDoc.data()?['multiProfileEnabled'] ?? false;
+
+    profiles.clear();
+
+    if (multiProfileEnabled) {
+      // Load profiles if enabled
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('profiles')
+          .get();
+
+      profiles = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+
+      // Add "Self" option to profiles list
+      profiles.insert(0, {'id': 'self', 'name': 'Self'});
+    } else {
+      // Only Self option when disabled
+      profiles = [
+        {'id': 'self', 'name': 'Self'}
+      ];
     }
+
+    selectedProfileId = profiles.first['id']; // default to first option
 
     setState(() => isLoadingProfiles = false);
   }
@@ -47,10 +66,6 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
   Widget build(BuildContext context) {
     if (uid == null) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text("My Medicines"),
-          backgroundColor: AppColors.primary,
-        ),
         body: const Center(child: Text("User not logged in")),
       );
     }
@@ -59,8 +74,8 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
 
       body: Column(
         children: [
-          // Multi-profile dropdown
-          if (!isLoadingProfiles && profiles.isNotEmpty)
+          // Dropdown only if multi-profile is enabled
+          if (!isLoadingProfiles && multiProfileEnabled)
             Padding(
               padding: const EdgeInsets.all(12),
               child: DropdownButton<String>(
@@ -87,7 +102,11 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
                   .collection('users')
                   .doc(uid)
                   .collection('medicines')
-                  .where('profileId', isEqualTo: selectedProfileId)
+                  .where(
+                'profileId',
+                isEqualTo:
+                selectedProfileId == 'self' ? null : selectedProfileId,
+              )
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -117,7 +136,8 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
                             ? CircleAvatar(
                           backgroundImage: NetworkImage(med.imageUrl!),
                         )
-                            : const CircleAvatar(child: Icon(Icons.medical_services)),
+                            : const CircleAvatar(
+                            child: Icon(Icons.medical_services)),
                         title: Text(med.name),
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -131,9 +151,11 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
                               children: med.times.map((timeEntry) {
                                 final label = timeEntry['label'] ?? 'Custom';
                                 final time = timeEntry['time'] ?? '08:00';
-                                final beforeAfter = timeEntry['beforeAfter'] ?? 'After';
+                                final beforeAfter =
+                                    timeEntry['beforeAfter'] ?? 'After';
                                 return Chip(
-                                  label: Text("$label • $time • $beforeAfter meal"),
+                                  label:
+                                  Text("$label • $time • $beforeAfter meal"),
                                 );
                               }).toList(),
                             ),
@@ -143,18 +165,21 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             IconButton(
-                              icon: const Icon(Icons.edit, color: AppColors.primary),
+                              icon: const Icon(Icons.edit,
+                                  color: AppColors.primary),
                               onPressed: () {
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => AddMedicineScreen(medicine: med),
+                                    builder: (_) =>
+                                        AddMedicineScreen(medicine: med),
                                   ),
                                 );
                               },
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
+                              icon:
+                              const Icon(Icons.delete, color: Colors.red),
                               onPressed: () async {
                                 final confirm = await showDialog<bool>(
                                   context: context,
@@ -164,11 +189,13 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
                                         "Are you sure you want to delete this medicine?"),
                                     actions: [
                                       TextButton(
-                                        onPressed: () => Navigator.pop(ctx, false),
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, false),
                                         child: const Text("Cancel"),
                                       ),
                                       TextButton(
-                                        onPressed: () => Navigator.pop(ctx, true),
+                                        onPressed: () =>
+                                            Navigator.pop(ctx, true),
                                         child: const Text("Delete"),
                                       ),
                                     ],
@@ -183,13 +210,14 @@ class _MedicineListScreenState extends State<MedicineListScreen> {
 
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       const SnackBar(
-                                          content:
-                                          Text("Medicine deleted successfully")),
+                                          content: Text(
+                                              "Medicine deleted successfully")),
                                     );
                                   } catch (e) {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                          content: Text("Error deleting medicine: $e")),
+                                          content: Text(
+                                              "Error deleting medicine: $e")),
                                     );
                                   }
                                 }

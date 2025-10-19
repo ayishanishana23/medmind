@@ -6,7 +6,7 @@ class MedicineService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NotificationService _notificationService = NotificationService();
 
-  /// Delete a medicine and cancel all associated notifications
+  /// Delete a medicine and cancel all associated notifications (for all profiles)
   Future<void> deleteMedicine({
     required String uid,
     required String medId,
@@ -39,3 +39,4 @@ class MedicineService {
     await medRef.delete();
   }
 }
+

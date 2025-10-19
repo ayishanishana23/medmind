@@ -1,3 +1,4 @@
+// lib/screens/user/notification_screen.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -7,6 +8,31 @@ import '../../services/notification_service.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
+
+  DateTime _parseScheduledAt(dynamic raw) {
+    try {
+      if (raw == null) return DateTime.now();
+      if (raw is Timestamp) return raw.toDate();
+      if (raw is DateTime) return raw;
+      if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
+      if (raw is String) {
+        // Try ISO parse
+        final dt = DateTime.tryParse(raw);
+        if (dt != null) return dt;
+        // Try parse as millis string
+        final millis = int.tryParse(raw);
+        if (millis != null) return DateTime.fromMillisecondsSinceEpoch(millis);
+      }
+    } catch (_) {}
+    return DateTime.now();
+  }
+
+  int? _parseNotificationId(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is int) return raw;
+    if (raw is String) return int.tryParse(raw);
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -27,10 +53,15 @@ class NotificationsScreen extends StatelessWidget {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text("Notifications"),
-        leading: IconButton(onPressed: (){Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const UserHome()),
-        );}, icon:Icon(Icons.arrow_back_ios) ),
+        leading: IconButton(
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const UserHome()),
+            );
+          },
+          icon: const Icon(Icons.arrow_back_ios),
+        ),
         backgroundColor: AppColors.primary,
       ),
       body: StreamBuilder<QuerySnapshot>(
@@ -40,18 +71,28 @@ class NotificationsScreen extends StatelessWidget {
             .collection('notifications')
             .snapshots(),
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting)
+          if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
-          final notifications = snapshot.data?.docs ?? [];
-          if (notifications.isEmpty)
-            return const Center(child: Text("No notifications yet"));
+          }
 
-          // Sort by scheduledAt descending
+          final docs = snapshot.data?.docs ?? [];
+          if (docs.isEmpty) return const Center(child: Text("No notifications yet"));
+
+          // Convert QueryDocumentSnapshot -> Map<String, dynamic> safely
+          final notifications = docs.map((doc) {
+            final Map<String, dynamic> data = {};
+            try {
+              final raw = doc.data();
+              if (raw is Map<String, dynamic>) data.addAll(raw);
+            } catch (_) {}
+            data['_docId'] = doc.id;
+            return data;
+          }).toList();
+
+          // Sort by scheduledAt descending (safe parsing)
           notifications.sort((a, b) {
-            final aTime =
-                (a['scheduledAt'] as Timestamp?)?.toDate() ?? DateTime.now();
-            final bTime =
-                (b['scheduledAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+            final aTime = _parseScheduledAt(a['scheduledAt']);
+            final bTime = _parseScheduledAt(b['scheduledAt']);
             return bTime.compareTo(aTime);
           });
 
@@ -60,14 +101,23 @@ class NotificationsScreen extends StatelessWidget {
             itemCount: notifications.length,
             itemBuilder: (context, index) {
               final notif = notifications[index];
-              final status = notif['status'] ?? 'pending';
-              final medName = notif['medName'] ?? 'Unknown';
-              final label = notif['label'] ?? '';
-              final beforeAfter = notif['beforeAfter'] ?? '';
-              final scheduledAt =
-                  (notif['scheduledAt'] as Timestamp?)?.toDate() ??
-                  DateTime.now();
-              final notificationId = notif['notificationId'] ?? 0;
+
+              final status = (notif['status'] ?? 'pending').toString();
+              final medName = notif['medName']?.toString() ?? 'Unknown';
+              final label = notif['label']?.toString() ?? '';
+              final beforeAfter = notif['beforeAfter']?.toString() ?? '';
+              final scheduledAt = _parseScheduledAt(notif['scheduledAt']);
+              final notificationId = _parseNotificationId(notif['notificationId']) ?? 0;
+              final medicineId = notif['medicineId']?.toString() ?? '';
+
+              // Friendly scheduled time text (if we were unable to parse we show N/A)
+              String scheduledTimeText;
+              try {
+                scheduledTimeText =
+                "${scheduledAt.hour.toString().padLeft(2, '0')}:${scheduledAt.minute.toString().padLeft(2, '0')}";
+              } catch (_) {
+                scheduledTimeText = "N/A";
+              }
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
@@ -80,12 +130,12 @@ class NotificationsScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "$medName - $label ",
+                        "$medName${label.isNotEmpty ? ' - $label' : ''}",
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        "${beforeAfter.toLowerCase() == 'before' ? 'Before meal' : 'After meal'} • Scheduled at ${scheduledAt.hour.toString().padLeft(2, '0')}:${scheduledAt.minute.toString().padLeft(2, '0')}",
+                        "${beforeAfter.toLowerCase() == 'before' ? 'Before meal' : 'After meal'} • Scheduled at $scheduledTimeText",
                       ),
                       const SizedBox(height: 8),
                       Row(
@@ -105,18 +155,19 @@ class NotificationsScreen extends StatelessWidget {
                               onPressed: status == 'taken'
                                   ? null
                                   : () async {
-                                      await NotificationService().logDose(
-                                        uid,
-                                        notif['medicineId'],
-                                        'taken',
-                                        'notification',
-                                        medName: medName,
-                                      );
-                                      await NotificationService()
-                                          .cancelNotificationById(
-                                            notificationId,
-                                          );
-                                    },
+                                // mark as taken and cancel local notif
+                                await NotificationService().logDose(
+                                  uid,
+                                  medicineId,
+                                  'taken',
+                                  'notification',
+                                  medName: medName,
+                                );
+                                if (notificationId != 0) {
+                                  await NotificationService()
+                                      .cancelNotificationById(notificationId);
+                                }
+                              },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.green,
                               ),
@@ -130,18 +181,18 @@ class NotificationsScreen extends StatelessWidget {
                               onPressed: status == 'missed'
                                   ? null
                                   : () async {
-                                      await NotificationService().logDose(
-                                        uid,
-                                        notif['medicineId'],
-                                        'missed',
-                                        'notification',
-                                        medName: medName,
-                                      );
-                                      await NotificationService()
-                                          .cancelNotificationById(
-                                            notificationId,
-                                          );
-                                    },
+                                await NotificationService().logDose(
+                                  uid,
+                                  medicineId,
+                                  'missed',
+                                  'notification',
+                                  medName: medName,
+                                );
+                                if (notificationId != 0) {
+                                  await NotificationService()
+                                      .cancelNotificationById(notificationId);
+                                }
+                              },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.red,
                               ),
@@ -153,17 +204,18 @@ class NotificationsScreen extends StatelessWidget {
                             flex: 1,
                             child: ElevatedButton(
                               onPressed: () async {
+                                final timeLabel = notif['timeLabel']?.toString() ?? '';
                                 await NotificationService().scheduleSnooze(
-                                  medId: notif['medicineId'],
+                                  medId: medicineId,
                                   medName: medName,
-                                  timeLabel: notif['timeLabel'],
+                                  time: timeLabel,
                                   label: label,
                                   beforeAfter: beforeAfter,
                                   minutes: 10,
                                 );
                                 await NotificationService().logDose(
                                   uid,
-                                  notif['medicineId'],
+                                  medicineId,
                                   'snoozed',
                                   'notification',
                                   medName: medName,

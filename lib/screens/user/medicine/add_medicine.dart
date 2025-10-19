@@ -54,8 +54,9 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
   @override
   void initState() {
     super.initState();
-    _loadUserProfiles();
-    if (widget.medicine != null) _loadMedicineForEdit();
+    _loadUserProfiles().then((_) {
+      if (widget.medicine != null) _loadMedicineForEdit();
+    });
   }
 
   Future<void> _loadUserProfiles() async {
@@ -79,10 +80,15 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         return data;
       }).toList();
 
-      // default selection
-      if (_profiles.isNotEmpty) _selectedProfile = _profiles[0];
+      // Always include "Self" option at top
+      _profiles.insert(0, {'id': 'self', 'name': 'Self'});
+    } else {
+      _profiles = [
+        {'id': 'self', 'name': 'Self'},
+      ];
     }
 
+    if (_profiles.isNotEmpty) _selectedProfile = _profiles.first;
     setState(() {});
   }
 
@@ -98,10 +104,11 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     selectedTimes = med.times.map((e) => Map<String, String>.from(e)).toList();
     existingImageUrl = med.imageUrl;
 
-    // Set selected profile if editing medicine
-    if (_multiProfileEnabled && _profiles.isNotEmpty) {
-      _selectedProfile =
-          _profiles.firstWhere((p) => p['id'] == med.profileId, orElse: () => _profiles[0]);
+    if (_profiles.isNotEmpty) {
+      _selectedProfile = _profiles.firstWhere(
+            (p) => p['id'] == med.profileId,
+        orElse: () => _profiles.first,
+      );
     }
   }
 
@@ -153,8 +160,10 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     );
     if (picked != null) {
       setState(() {
-        if (isStart) startDate = picked;
-        else endDate = picked;
+        if (isStart)
+          startDate = picked;
+        else
+          endDate = picked;
       });
     }
   }
@@ -210,8 +219,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
     }
     if (_pickedImageFile == null && _pickedImageBytes == null) return '';
 
-    final ref =
-    FirebaseStorage.instance.ref().child('users/$uid/medicines/$docId.jpg');
+    final ref = FirebaseStorage.instance.ref().child('users/$uid/medicines/$docId.jpg');
     if (kIsWeb) {
       await ref.putData(_pickedImageBytes!, SettableMetadata(contentType: 'image/jpeg'));
     } else {
@@ -225,13 +233,15 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
 
     if (startDate == null || endDate == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Please select course start and end dates")));
+          const SnackBar(content: Text("Please select course start and end dates"))
+      );
       return;
     }
 
     if (selectedTimes.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("Select at least one time")));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Select at least one time"))
+      );
       return;
     }
 
@@ -246,7 +256,11 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
           .doc(uid)
           .collection("medicines")
           .doc(widget.medicine!.id)
-          : FirebaseFirestore.instance.collection("users").doc(uid).collection("medicines").doc();
+          : FirebaseFirestore.instance
+          .collection("users")
+          .doc(uid)
+          .collection("medicines")
+          .doc();
 
       final imageUrl = await _uploadImageAndGetUrl(uid, docRef.id);
 
@@ -266,24 +280,62 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         endDate: endDate!,
         expiryDate: expiryDate ?? endDate!,
         active: true,
-        profileId: _selectedProfile?['id'] ?? '',
-        profileName: _selectedProfile?['name'] ?? '',
+        profileId: _selectedProfile?['id'] ?? 'self',
+        profileName: _selectedProfile?['name'] ?? 'Self',
       );
 
+      // Save medicine in Firestore
       await docRef.set(med.toMap(), SetOptions(merge: true));
 
       final notifier = NotificationService();
+
+      // Schedule daily reminders
       for (var t in med.times) {
         try {
-          await notifier.scheduleDailyReminder(
+          await notifier.scheduleDailyReminderForProfile(
             medId: med.id,
             medName: med.name,
-            timeLabel: t['time']!,
+            time: t['time']!,
             label: t['label']!,
             beforeAfter: t['beforeAfter']!,
+            profileId: med.profileId,
+            profileName: med.profileName,
           );
         } catch (e) {
-          debugPrint("Notification error: $e");
+          debugPrint("Daily notification error: $e");
+        }
+      }
+
+      // Schedule low-stock notification if needed
+      if (med.lowStockAlert > 0 && med.stock > 0) {
+        try {
+          final notifId = med.id.hashCode ^ 9999;
+
+          final notifData = {
+            'medicineId': med.id,
+            'medName': med.name,
+            'title': 'Low Stock Alert',
+            'body': 'Your medicine "${med.name}" is running low (${med.stock} left)',
+            'notificationId': notifId,
+            'status': 'pending',
+            'type': 'low_stock',
+            'userId': uid,
+            'profileId': med.profileId,
+            'profileName': med.profileName,
+            'scheduledAt': Timestamp.fromDate(DateTime.now().add(const Duration(seconds: 5))),
+            'createdAt': FieldValue.serverTimestamp(),
+          };
+
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .collection('notifications')
+              .doc(notifId.toString())
+              .set(notifData);
+
+          await notifier.scheduleNotificationFromData(notifData);
+        } catch (e) {
+          debugPrint("Low-stock notification error: $e");
         }
       }
 
@@ -294,8 +346,9 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         Navigator.pop(context);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("Error: $e")));
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error: $e"))
+      );
     } finally {
       setState(() => isLoading = false);
     }
@@ -315,7 +368,6 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
           key: _formKey,
           child: Column(
             children: [
-              // Avatar
               GestureDetector(
                 onTap: _pickImage,
                 child: CircleAvatar(
@@ -331,40 +383,52 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                   child: (_pickedImageFile == null &&
                       _pickedImageBytes == null &&
                       existingImageUrl == null)
-                      ? const Icon(Icons.camera_alt,
-                      color: AppColors.primary, size: 30)
+                      ? const Icon(Icons.camera_alt, color: AppColors.primary, size: 30)
                       : null,
                 ),
               ),
-
+              const SizedBox(height: 12),
               // Multi-profile selector
-              if (_multiProfileEnabled && _profiles.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: DropdownButton<Map<String, dynamic>>(
-                    isExpanded: true,
-                    value: _selectedProfile,
-                    items: _profiles.map((p) {
-                      return DropdownMenuItem(
-                        value: p,
-                        child: Text(p['name'] ?? 'No Name'),
-                      );
-                    }).toList(),
-                    onChanged: (val) => setState(() => _selectedProfile = val),
-                  ),
-                ),
-
-              const SizedBox(height: 20),
+              DropdownButton<Map<String, dynamic>>(
+                isExpanded: true,
+                value: _selectedProfile,
+                items: _profiles
+                    .map((p) => DropdownMenuItem(
+                  value: p,
+                  child: Text(p['name'] ?? 'No Name'),
+                ))
+                    .toList(),
+                onChanged: (val) => setState(() => _selectedProfile = val),
+              ),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: nameController,
-                decoration: const InputDecoration(labelText: "Medicine Name"),
-                validator: (v) => v == null || v.isEmpty ? "Required" : null,
+                decoration: const InputDecoration(
+                  labelText: "Medicine Name",
+                  prefixIcon: Icon(Icons.medication),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return "Please enter medicine name";
+                  }
+                  return null;
+                },
               ),
-                            const SizedBox(height: 12),
+              const SizedBox(height: 16),
               TextFormField(
                 controller: dosageController,
-                decoration: const InputDecoration(labelText: "Dosage (e.g., 1 tablet)"),
-                validator: (v) => v == null || v.isEmpty ? "Required" : null,
+                decoration: const InputDecoration(
+                  labelText: "Dosage (e.g. 1 tablet)",
+                  prefixIcon: Icon(Icons.local_hospital),
+                  border: OutlineInputBorder(),
+                ),
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return "Please enter dosage";
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               Align(
@@ -387,8 +451,6 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-
               if (selectedTimes.isNotEmpty)
                 ...selectedTimes.map((t) {
                   final index = selectedTimes.indexOf(t);
@@ -403,10 +465,8 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: Text(
-                                  "${t['label']} — ${t['time']}",
-                                  style: const TextStyle(fontWeight: FontWeight.w600),
-                                ),
+                                child: Text("${t['label']} — ${t['time']}",
+                                    style: const TextStyle(fontWeight: FontWeight.w600)),
                               ),
                               IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red),
@@ -416,10 +476,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                           ),
                           const SizedBox(height: 6),
                           ToggleButtons(
-                            isSelected: [
-                              t['beforeAfter'] == 'Before',
-                              t['beforeAfter'] == 'After'
-                            ],
+                            isSelected: [t['beforeAfter'] == 'Before', t['beforeAfter'] == 'After'],
                             onPressed: (i) {
                               setState(() {
                                 t['beforeAfter'] = i == 0 ? 'Before' : 'After';
@@ -443,9 +500,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                       ),
                     ),
                   );
-                }
-                ),
-
+                }),
               const Divider(height: 32),
               ListTile(
                 title: Text(startDate == null
@@ -497,20 +552,10 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
                     ? const CircularProgressIndicator(color: Colors.white)
                     : Text(isEdit ? "Update Medicine" : "Add Medicine"),
               ),
-
-
-              ],
+            ],
           ),
         ),
       ),
     );
   }
 }
-
-
-
-
-
-
-
-

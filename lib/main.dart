@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -14,58 +13,49 @@ import 'package:medmind/screens/user/user_home.dart';
 import 'package:medmind/services/notification_service.dart';
 import 'firebase_options.dart';
 
-// 🟡 Handle background FCM messages
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await NotificationService().init();
-  await NotificationService().showPushNotification(message);
-  print('✅ Background FCM handled: ${message.notification?.title}');
-}
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  // ✅ Initialize notification service
+  // ✅ Initialize timezone + notification plugin first
   await NotificationService().init();
 
-  // ✅ Request permission for local + push notifications
-  if (Platform.isAndroid) {
-    final status = await Permission.notification.request();
-    if (!status.isGranted) {
-      print("🚫 Notification permission denied");
-    }
-  }
-
-  // ✅ Register background message handler
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-  // ✅ Initialize FCM and store device token in Firestore
-  final fcm = FirebaseMessaging.instance;
-  final token = await fcm.getToken();
-  final user = FirebaseAuth.instance.currentUser;
-  if (user != null && token != null) {
-    await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-      'fcmToken': token,
-    });
-  }
-
-  // ✅ Foreground notification listener
-  FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-    print('📨 Foreground FCM received: ${message.notification?.title}');
-    await NotificationService().showPushNotification(message);
-  });
-
-  // ✅ When user taps notification (while app is backgrounded)
-  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-    print('📬 Notification clicked: ${message.notification?.title}');
-  });
+  // ✅ Request notification permissions (Android 13+ and iOS)
+  await _handleNotificationPermission();
 
   runApp(const MedMindApp());
 }
 
+// 🔔 Ask permission safely
+Future<void> _handleNotificationPermission() async {
+  if (Platform.isAndroid) {
+    final androidVersion = int.parse(Platform.operatingSystemVersion
+        .replaceAll(RegExp(r'[^0-9]'), '')
+        .substring(0, 2));
+    // Only Android 13+ (API 33) needs explicit permission
+    if (androidVersion >= 13) {
+      var status = await Permission.notification.status;
+      if (!status.isGranted) {
+        status = await Permission.notification.request();
+      }
+
+      if (status.isGranted) {
+        debugPrint("✅ Notification permission granted (Android)");
+      } else {
+        debugPrint("🚫 Notification permission denied (Android)");
+      }
+    }
+  } else if (Platform.isIOS) {
+    final status = await Permission.notification.request();
+    debugPrint(status.isGranted
+        ? "✅ Notification permission granted (iOS)"
+        : "🚫 Notification permission denied (iOS)");
+  }
+}
+
 class MedMindApp extends StatelessWidget {
   const MedMindApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -77,9 +67,10 @@ class MedMindApp extends StatelessWidget {
   }
 }
 
-// 🟢 Auth gate to choose user screen
+// 🟢 Auth gate to choose user/admin screen
 class Gate extends StatelessWidget {
   const Gate({super.key});
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(

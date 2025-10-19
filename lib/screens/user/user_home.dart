@@ -1,13 +1,8 @@
-// lib/screens/user/user_home.dart
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart';
+import 'package:medmind/screens/user/medicine/add_medicine.dart';
 import '../../../core/constants.dart';
-import '../../../models/medicine.dart';
+import '../test_notification.dart';
 import 'medicine/medicine_list.dart';
-import 'medicine/add_medicine.dart';
-
 import 'activity_screen.dart';
 import 'notification_screen.dart';
 import 'profile/profile_screen.dart';
@@ -35,7 +30,6 @@ class _UserHomeState extends State<UserHome> {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: _screens[_currentIndex],
-
       floatingActionButton: FloatingActionButton(
         backgroundColor: AppColors.primary,
         shape: const CircleBorder(),
@@ -49,7 +43,6 @@ class _UserHomeState extends State<UserHome> {
         child: const Icon(Icons.add, size: 30, color: Colors.white),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: Colors.transparent,
@@ -79,7 +72,7 @@ class _UserHomeState extends State<UserHome> {
                 children: [
                   _buildNavItem(Icons.home, 0),
                   _buildNavItem(Icons.bar_chart, 1),
-                  const SizedBox(width: 48), // space for FAB
+                  const SizedBox(width: 48),
                   _buildNavItem(Icons.notifications, 2),
                   _buildNavItem(Icons.person, 3),
                 ],
@@ -107,7 +100,6 @@ class _UserHomeState extends State<UserHome> {
   }
 }
 
-/// 🔹 Home Tab
 class HomeTab extends StatelessWidget {
   const HomeTab({super.key});
 
@@ -128,7 +120,7 @@ class HomeTab extends StatelessWidget {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                MaterialPageRoute(builder: (_) => const TestNotificationScreen()),
               );
             },
           ),
@@ -136,9 +128,8 @@ class HomeTab extends StatelessWidget {
       ),
       body: const Padding(
         padding: EdgeInsets.all(16),
-        child: MedicineListScreen(), // List takes full space, no subheading
+        child: MedicineListScreen(),
       ),
     );
   }
 }
-

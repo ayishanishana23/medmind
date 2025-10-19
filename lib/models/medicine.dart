@@ -4,7 +4,7 @@ class Medicine {
   final String dosage;
   final int stock;
   final int lowStockAlert;
-  final List<Map<String, dynamic>> times; // ✅ Dynamic type
+  final List<Map<String, dynamic>> times;
   final String? imageUrl;
   final DateTime startDate;
   final DateTime endDate;

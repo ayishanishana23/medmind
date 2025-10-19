@@ -17,7 +17,6 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final user = FirebaseAuth.instance.currentUser;
 
-
   String? displayName;
   String? email;
   String? gender;
@@ -25,7 +24,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool isFetching = true;
   bool _multiProfileEnabled = false;
   List<Map<String, dynamic>> _profiles = [];
-
 
   @override
   void initState() {
@@ -36,10 +34,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _loadUserData() async {
     if (user == null) return;
 
-    final snap = await FirebaseFirestore.instance
-        .collection("users")
-        .doc(user!.uid)
-        .get();
+    final snap =
+    await FirebaseFirestore.instance.collection("users").doc(user!.uid).get();
 
     Map<String, dynamic>? data;
 
@@ -53,7 +49,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       _setGenderAvatarIfNull();
     }
 
-    // ✅ Safely read multi-profile flag even if user doc missing
     _multiProfileEnabled = data?['multiProfileEnabled'] ?? false;
 
     if (_multiProfileEnabled) {
@@ -61,6 +56,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .collection('users')
           .doc(user!.uid)
           .collection('profiles')
+          .orderBy('createdAt', descending: false)
           .get();
 
       _profiles = profilesSnap.docs.map((d) => d.data()).toList();
@@ -68,7 +64,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     setState(() => isFetching = false);
   }
-
 
   Future<void> _addProfile() async {
     final nameController = TextEditingController();
@@ -99,16 +94,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel"),
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
           ElevatedButton(
             onPressed: () async {
               final name = nameController.text.trim();
               if (name.isEmpty) return;
-              final profileId = DateTime.now().millisecondsSinceEpoch.toString();
 
+              final profileId = DateTime.now().millisecondsSinceEpoch.toString();
               await FirebaseFirestore.instance
                   .collection('users')
                   .doc(user!.uid)
@@ -136,6 +128,143 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _editProfile(Map<String, dynamic> profile) async {
+    final nameController = TextEditingController(text: profile['name']);
+    String selectedGender = profile['gender'] ?? 'Male';
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Edit Profile"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(labelText: "Profile Name"),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: selectedGender,
+              items: const [
+                DropdownMenuItem(value: 'Male', child: Text('Male')),
+                DropdownMenuItem(value: 'Female', child: Text('Female')),
+                DropdownMenuItem(value: 'Other', child: Text('Other')),
+              ],
+              onChanged: (v) => selectedGender = v!,
+              decoration: const InputDecoration(labelText: "Gender"),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () async {
+              final updatedName = nameController.text.trim();
+              if (updatedName.isEmpty) return;
+
+              await FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(user!.uid)
+                  .collection('profiles')
+                  .doc(profile['profileId'])
+                  .update({
+                'name': updatedName,
+                'gender': selectedGender,
+              });
+
+              setState(() {
+                final index = _profiles.indexWhere(
+                        (p) => p['profileId'] == profile['profileId']);
+                if (index != -1) {
+                  _profiles[index]['name'] = updatedName;
+                  _profiles[index]['gender'] = selectedGender;
+                }
+              });
+
+              Navigator.pop(ctx);
+            },
+            child: const Text("Save"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteProfile(String profileId) async {
+    if (user == null) return;
+    if (profileId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Invalid profile id")),
+      );
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Delete Profile"),
+        content: const Text("Are you sure you want to delete this profile? This will also delete medicines assigned to this profile."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Delete", style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => isFetching = true);
+
+    try {
+      final uid = user!.uid;
+      final profileRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('profiles')
+          .doc(profileId);
+
+      // 1) Delete related medicines that have a `profileId` field referencing this profile.
+      //    (Adjust this if your app stores medicines inside profiles subcollection instead.)
+      final medsQuery = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('medicines')
+          .where('profileId', isEqualTo: profileId)
+          .get();
+
+      final batch = FirebaseFirestore.instance.batch();
+
+      for (final doc in medsQuery.docs) {
+        batch.delete(doc.reference);
+        // Optionally: also delete related notification docs for that medicine
+        // (if you save notification docs with medicineId, add another query here)
+      }
+
+      // 2) Delete the profile doc itself
+      batch.delete(profileRef);
+
+      // Commit batch
+      await batch.commit();
+
+      // 3) Update local UI list
+      setState(() {
+        _profiles.removeWhere((p) => p['profileId'] == profileId);
+        isFetching = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Profile and related medicines deleted")),
+      );
+    } catch (e, st) {
+      setState(() => isFetching = false);
+      debugPrint("Error deleting profile: $e\n$st");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error deleting profile: $e")),
+      );
+    }
   }
 
 
@@ -187,7 +316,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       child: Scaffold(
         appBar: AppBar(
           backgroundColor: AppColors.primary,
-
           leading: IconButton(
             icon: const Icon(Icons.arrow_back, color: AppColors.textDark),
             onPressed: () {
@@ -203,7 +331,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             children: [
               CircleAvatar(radius: 50, backgroundImage: _getAvatar()),
               const SizedBox(height: 12),
-              Text(displayName ?? "No Name", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Text(displayName ?? "No Name",
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               Text(email ?? "No Email", style: const TextStyle(color: Colors.grey)),
               const SizedBox(height: 30),
               if (_multiProfileEnabled) ...[
@@ -215,24 +344,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
                 const SizedBox(height: 10),
                 if (_profiles.isNotEmpty)
-                  Wrap(
-                    spacing: 8,
+                  Column(
                     children: _profiles.map((p) {
-                      return Chip(
-                        label: Text(p['name']),
-                        avatar: CircleAvatar(
-                          backgroundImage: AssetImage(
-                            p['gender'] == 'Male'
-                                ? 'assets/images/male.jpg'
-                                : p['gender'] == 'Female'
-                                ? 'assets/images/female.jpg'
-                                : 'assets/images/avatar.png',
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundImage: AssetImage(
+                              p['gender'] == 'Male'
+                                  ? 'assets/images/male.jpg'
+                                  : p['gender'] == 'Female'
+                                  ? 'assets/images/female.jpg'
+                                  : 'assets/images/avatar.png',
+                            ),
+                          ),
+                          title: Text(p['name']),
+                          subtitle: Text(p['gender'] ?? ''),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Colors.blue),
+                                onPressed: () => _editProfile(p),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () => _deleteProfile(p['profileId']),
+                              ),
+                            ],
                           ),
                         ),
                       );
                     }).toList(),
                   ),
-              ],const SizedBox(height: 5),
+              ],
+              const SizedBox(height: 10),
               Expanded(
                 child: ListView(
                   children: [
@@ -255,14 +401,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.settings,
                       text: "Settings",
                       onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                        );
+                        Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()));
                       },
                     ),
-
-
                     _buildProfileOption(
                       icon: Icons.logout,
                       text: "Log Out",
@@ -279,13 +420,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildProfileOption({required IconData icon, required String text, required VoidCallback onTap, bool isLogout = false}) {
+  Widget _buildProfileOption({
+    required IconData icon,
+    required String text,
+    required VoidCallback onTap,
+    bool isLogout = false,
+  }) {
     return Card(
       elevation: 0,
       margin: const EdgeInsets.symmetric(vertical: 8),
       child: ListTile(
         leading: Icon(icon, color: isLogout ? Colors.red : AppColors.primary),
-        title: Text(text, style: TextStyle(color: isLogout ? Colors.red : AppColors.textDark, fontWeight: FontWeight.w500)),
+        title: Text(
+          text,
+          style: TextStyle(
+            color: isLogout ? Colors.red : AppColors.textDark,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
         trailing: const Icon(Icons.arrow_forward_ios, size: 16),
         onTap: onTap,
       ),
