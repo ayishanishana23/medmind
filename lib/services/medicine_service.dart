@@ -6,37 +6,68 @@ class MedicineService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NotificationService _notificationService = NotificationService();
 
-  /// Delete a medicine and cancel all associated notifications (for all profiles)
+  /// Delete a medicine and cancel all associated notifications
   Future<void> deleteMedicine({
     required String uid,
     required String medId,
   }) async {
     final medRef = _firestore.collection('users').doc(uid).collection('medicines').doc(medId);
 
-    // 1️⃣ Cancel all notifications linked to this medicine
-    final notifSnapshot = await _firestore
-        .collection('users')
-        .doc(uid)
-        .collection('notifications')
-        .where('medicineId', isEqualTo: medId)
-        .get();
+    try {
+      // 1️⃣ Cancel all notifications linked to this medicine
+      await _notificationService.cancelMedicineNotifications(medId);
+      
+      // Also cancel low stock notification
+      await _notificationService.cancelLowStockNotification(medId);
 
-    for (var doc in notifSnapshot.docs) {
-      final notificationId = doc['notificationId'] as int?;
-      if (notificationId != null) {
-        await _notificationService.cancelNotificationById(notificationId);
+      // 2️⃣ Delete logs if needed
+      final logSnapshot = await medRef.collection('logs').get();
+      for (var logDoc in logSnapshot.docs) {
+        await logDoc.reference.delete();
       }
-      await doc.reference.delete(); // remove notification doc
-    }
 
-    // 2️⃣ Delete logs if needed
-    final logSnapshot = await medRef.collection('logs').get();
-    for (var logDoc in logSnapshot.docs) {
-      await logDoc.reference.delete();
+      // 3️⃣ Delete the medicine document
+      await medRef.delete();
+      
+      print('✅ Medicine $medId deleted successfully with all notifications cancelled');
+    } catch (e) {
+      print('❌ Error deleting medicine $medId: $e');
+      rethrow;
     }
+  }
 
-    // 3️⃣ Delete the medicine document
-    await medRef.delete();
+  /// Update medicine stock and check for low stock alerts
+  Future<void> updateMedicineStock({
+    required String uid,
+    required String medId,
+    required int newStock,
+    required int lowStockThreshold,
+    required String medicineName,
+    required String profileId,
+    required String profileName,
+  }) async {
+    try {
+      final medRef = _firestore.collection('users').doc(uid).collection('medicines').doc(medId);
+      
+      // Update stock in Firestore
+      await medRef.update({'stock': newStock});
+      
+      // Check if we need to trigger low stock notification
+      if (newStock <= lowStockThreshold && newStock > 0) {
+        await _notificationService.scheduleLowStockNotification(
+          medId: medId,
+          medName: medicineName,
+          profileId: profileId,
+          profileName: profileName,
+          stockThreshold: newStock,
+          delaySeconds: 1, // Show immediately
+        );
+      }
+      
+      print('✅ Medicine stock updated: $medicineName now has $newStock units');
+    } catch (e) {
+      print('❌ Error updating medicine stock: $e');
+      rethrow;
+    }
   }
 }
-

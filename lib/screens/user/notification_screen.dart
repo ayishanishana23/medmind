@@ -4,7 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:medmind/screens/user/user_home.dart';
 import '../../core/constants.dart';
-import '../../services/notification_service.dart';
+
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -156,17 +156,17 @@ class NotificationsScreen extends StatelessWidget {
                                   ? null
                                   : () async {
                                 // mark as taken and cancel local notif
-                                await NotificationService().logDose(
-                                  uid,
-                                  medicineId,
-                                  'taken',
-                                  'notification',
-                                  medName: medName,
-                                );
-                                if (notificationId != 0) {
-                                  await NotificationService()
-                                      .cancelNotificationById(notificationId);
-                                }
+                                // await NotificationService().logDose(
+                                //   uid,
+                                //   medicineId,
+                                //   'taken',
+                                //   'notification',
+                                //   medName: medName,
+                                // );
+                                // if (notificationId != 0) {
+                                //   await NotificationService()
+                                //       .cancelNotificationById(notificationId);
+                                // }
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.green,
@@ -181,17 +181,17 @@ class NotificationsScreen extends StatelessWidget {
                               onPressed: status == 'missed'
                                   ? null
                                   : () async {
-                                await NotificationService().logDose(
-                                  uid,
-                                  medicineId,
-                                  'missed',
-                                  'notification',
-                                  medName: medName,
-                                );
-                                if (notificationId != 0) {
-                                  await NotificationService()
-                                      .cancelNotificationById(notificationId);
-                                }
+                                // await NotificationService().logDose(
+                                //   uid,
+                                //   medicineId,
+                                //   'missed',
+                                //   'notification',
+                                //   medName: medName,
+                                // );
+                                // if (notificationId != 0) {
+                                //   await NotificationService()
+                                //       .cancelNotificationById(notificationId);
+                                // }
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.red,
@@ -205,21 +205,21 @@ class NotificationsScreen extends StatelessWidget {
                             child: ElevatedButton(
                               onPressed: () async {
                                 final timeLabel = notif['timeLabel']?.toString() ?? '';
-                                await NotificationService().scheduleSnooze(
-                                  medId: medicineId,
-                                  medName: medName,
-                                  time: timeLabel,
-                                  label: label,
-                                  beforeAfter: beforeAfter,
-                                  minutes: 10,
-                                );
-                                await NotificationService().logDose(
-                                  uid,
-                                  medicineId,
-                                  'snoozed',
-                                  'notification',
-                                  medName: medName,
-                                );
+                                // await NotificationService().scheduleSnooze(
+                                //   medId: medicineId,
+                                //   medName: medName,
+                                //   time: timeLabel,
+                                //   label: label,
+                                //   beforeAfter: beforeAfter,
+                                //   minutes: 10,
+                                // );
+                                // await NotificationService().logDose(
+                                //   uid,
+                                //   medicineId,
+                                //   'snoozed',
+                                //   'notification',
+                                //   medName: medName,
+                                // );
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.orange,

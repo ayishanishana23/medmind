@@ -1,336 +1,378 @@
-// lib/services/notification_service.dart
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
-import 'package:timezone/data/latest_all.dart' as tzdata;
-import 'package:permission_handler/permission_handler.dart';
-
-@pragma('vm:entry-point')
-void notificationTapBackground(NotificationResponse response) {
-  if (kDebugMode) print('[notificationTapBackground] payload: ${response.payload}');
-}
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:flutter_timezone/flutter_timezone.dart';
 
 class NotificationService {
-  static final NotificationService _instance = NotificationService._internal();
-  factory NotificationService() => _instance;
+  static final NotificationService _notificationService = NotificationService._internal();
+
+  factory NotificationService() {
+    return _notificationService;
+  }
+
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+
   NotificationService._internal();
 
-  final FlutterLocalNotificationsPlugin _fln = FlutterLocalNotificationsPlugin();
-  bool _inited = false;
-  Timer? _missCheckerTimer;
+  /// Simple initialization method like the working app
+  Future<void> initNotification() async {
+    tz.initializeTimeZones();
+    
+    // Android initialization
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
 
-  /// Initialize notifications, request permissions, and start listeners
-  Future<void> init() async {
-    if (_inited) return;
-
-    tzdata.initializeTimeZones();
-    tz.setLocalLocation(tz.local);
-
-    // Request permissions
-    if (Platform.isIOS) {
-      await _fln
-          .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()
-          ?.requestPermissions(alert: true, badge: true, sound: true);
-    } else if (Platform.isAndroid) {
-      var status = await Permission.notification.status;
-      if (!status.isGranted) {
-        status = await Permission.notification.request();
-      }
-      if (status.isGranted) {
-        if (kDebugMode) debugPrint("✅ Notification permission granted (Android)");
-      } else {
-        if (kDebugMode) debugPrint("🚫 Notification permission denied (Android)");
-      }
-    }
-
-    // Create Android notification channel
-    const androidChannel = AndroidNotificationChannel(
-      'med_channel',
-      'Medicine reminders',
-      description: 'Reminders to take medicine',
-      importance: Importance.high,
+    // iOS initialization
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
     );
 
-    final androidPlugin = _fln
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(androidChannel);
-
-    // Initialize plugin
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    final iosInit = DarwinInitializationSettings(
-      notificationCategories: [
-        DarwinNotificationCategory(
-          'MED_CAT',
-          actions: [
-            DarwinNotificationAction.plain('TAKEN', 'Taken'),
-            DarwinNotificationAction.plain('MISSED', 'Missed'),
-            DarwinNotificationAction.plain('SNOOZE', 'Snooze'),
-          ],
-        ),
-      ],
-    );
-
-    await _fln.initialize(
-      InitializationSettings(android: androidInit, iOS: iosInit),
-      onDidReceiveNotificationResponse: _onNotificationResponse,
-      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
-    );
-
-    // Start listeners
-    _listenToNotifications();
-    await _markMissedOnInit();
-    _startPeriodicMissChecker();
-
-    _inited = true;
-
-    if (kDebugMode) {
-      debugPrint('✅ NotificationService initialized');
-      debugPrint('ℹ️ Tip for Vivo devices: Enable Autostart and set battery to "No restrictions" '
-          'under Settings → Apps → MedMind → Battery → No restriction + Autostart ON');
-    }
+    const InitializationSettings initializationSettings =
+        InitializationSettings(
+            android: initializationSettingsAndroid,
+            iOS: initializationSettingsIOS);
+    
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
   }
 
-  /// Firestore listener
-  void _listenToNotifications() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('notifications')
-        .snapshots()
-        .listen((snapshot) {
-      for (var change in snapshot.docChanges) {
-        final data = change.doc.data();
-        if (data == null) continue;
-
-        final notificationId = data['notificationId'] as int?;
-        if (notificationId == null) continue;
-
-        if (change.type == DocumentChangeType.added && data['status'] == 'pending') {
-          final enriched = Map<String, dynamic>.from(data);
-          enriched['_docId'] = change.doc.id;
-          scheduleNotificationFromData(enriched);
-        }
-
-        if (change.type == DocumentChangeType.removed) {
-          cancelNotificationById(notificationId);
-        }
-      }
-    });
-  }
-
-  /// Schedule local notification from Firestore data
-  Future<void> scheduleNotificationFromData(Map<String, dynamic> data) async {
+  /// Initialize the notification service
+  Future<bool> init() async {
     try {
-      if (!_inited) await init();
-
-      if (Platform.isAndroid) {
-        var status = await Permission.notification.status;
-        if (!status.isGranted) {
-          status = await Permission.notification.request();
-          if (!status.isGranted) {
-            debugPrint("🚫 Notification permission denied – skipping schedule");
-            return;
-          }
-        }
-      }
-
-      final id = (data['notificationId'] is int)
-          ? data['notificationId'] as int
-          : DateTime.now().millisecondsSinceEpoch ~/ 1000;
-
-      final medName = data['medName'] ?? '';
-      final type = data['type'] ?? 'dose';
-      final label = data['label'] ?? '';
-      final beforeAfter = data['beforeAfter'] ?? '';
-
-      DateTime scheduledDateTime;
-      final rawScheduled = data['scheduledAt'];
-      if (rawScheduled is Timestamp) {
-        scheduledDateTime = rawScheduled.toDate();
-      } else if (data['time'] is String && (data['time'] as String).isNotEmpty) {
-        scheduledDateTime = _nextInstanceOf(data['time'] as String);
-      } else {
-        scheduledDateTime = DateTime.now().add(const Duration(seconds: 5));
-      }
-
-      if (scheduledDateTime.isBefore(DateTime.now())) {
-        debugPrint("⚠️ Skipping past notification for $scheduledDateTime");
-        return;
-      }
-
-      // Sync to Firestore
+      // Initialize timezone data
+      tz.initializeTimeZones();
+      
+      // Set local timezone
       try {
-        final uid = FirebaseAuth.instance.currentUser?.uid;
-        final docId = data['_docId']?.toString();
-        if (uid != null && docId != null) {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(uid)
-              .collection('notifications')
-              .doc(docId)
-              .update({'scheduledAt': Timestamp.fromDate(scheduledDateTime)});
-        }
-      } catch (_) {}
-
-      const androidDetails = AndroidNotificationDetails(
-        'med_channel',
-        'Medicine reminders',
-        channelDescription: 'Reminders to take medicine',
-        importance: Importance.max,
-        priority: Priority.high,
-        playSound: true,
-      );
-      const iosDetails = DarwinNotificationDetails(categoryIdentifier: 'MED_CAT');
-
-      final title = (data['title'] as String?) ??
-          (type == 'low_stock' ? 'Low Stock Alert' : '$label — $medName');
-
-      String body = data['body'] as String? ?? '';
-      if (body.isEmpty) {
-        if (type == 'dose') {
-          body =
-          '${beforeAfter.toLowerCase() == "before" ? "Before meal" : "After meal"} • Tap to mark';
-        } else if (type == 'low_stock') {
-          body = 'Your medicine "$medName" is running low';
-        } else if (type == 'snooze') {
-          body = 'Snoozed reminder for $medName';
-        }
+        final String timezoneName = await FlutterTimezone.getLocalTimezone();
+        tz.setLocalLocation(tz.getLocation(timezoneName));
+        debugPrint('✅ Local timezone set to: $timezoneName');
+      } catch (e) {
+        debugPrint('⚠️ Failed to get local timezone, using UTC: $e');
+        tz.setLocalLocation(tz.getLocation('UTC'));
       }
 
-      final tzSchedule = tz.TZDateTime.from(scheduledDateTime, tz.local);
-      final payload =
-      jsonEncode({...data, '_scheduledAt': tzSchedule.toIso8601String()});
+      // Android initialization
+      const AndroidInitializationSettings initializationSettingsAndroid =
+          AndroidInitializationSettings('@mipmap/ic_launcher');
 
-      await _fln.zonedSchedule(
-        id,
-        title,
-        body,
-        tzSchedule,
-        const NotificationDetails(android: androidDetails, iOS: iosDetails),
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        payload: payload,
+      // iOS initialization
+      const DarwinInitializationSettings initializationSettingsIOS =
+          DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
       );
 
-      debugPrint('✅ Scheduled local notification: id=$id "$title" at $scheduledDateTime');
-    } catch (e, st) {
-      debugPrint('❌ scheduleNotificationFromData failed: $e\n$st');
-    }
-  }
+      const InitializationSettings initializationSettings = InitializationSettings(
+        android: initializationSettingsAndroid,
+        iOS: initializationSettingsIOS,
+      );
 
-  /// Cancel notification
-  Future<void> cancelNotificationById(int id, {bool removeDoc = false}) async {
-    try {
-      await _fln.cancel(id);
-      if (kDebugMode) debugPrint('❌ Cancelled local notification $id');
+      // Initialize the plugin
+      await flutterLocalNotificationsPlugin.initialize(initializationSettings);
 
-      if (removeDoc) {
-        final uid = FirebaseAuth.instance.currentUser?.uid;
-        if (uid != null) {
-          final docRef = FirebaseFirestore.instance
-              .collection('users')
-              .doc(uid)
-              .collection('notifications')
-              .doc(id.toString());
-          final doc = await docRef.get();
-          if (doc.exists) await docRef.delete();
-        }
-      }
+      // Request permissions for Android 13+ and exact alarms
+      await _requestPermissions();
+      await _requestExactAlarmPermission();
+
+      debugPrint('✅ NotificationService initialized successfully');
+      return true;
     } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ cancelNotificationById failed: $e');
+      debugPrint('❌ NotificationService initialization error: $e');
+      return false;
     }
   }
 
-  /// Daily reminder
+  /// Request notification permissions
+  Future<bool> requestPermissions() async {
+    return await _requestPermissions();
+  }
+
+  Future<bool> _requestPermissions() async {
+    try {
+      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+
+      if (androidImplementation != null) {
+        final bool? granted = await androidImplementation.requestNotificationsPermission();
+        debugPrint('📱 Notification permission granted: $granted');
+        return granted ?? false;
+      }
+      return true; // iOS permissions are handled during initialization
+    } catch (e) {
+      debugPrint('❌ Error requesting notification permissions: $e');
+      return false;
+    }
+  }
+
+  /// Request exact alarm permission for Android 12+
+  Future<bool> _requestExactAlarmPermission() async {
+    try {
+      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+
+      if (androidImplementation != null) {
+        final bool? canScheduleExactNotifications = await androidImplementation.canScheduleExactNotifications();
+        debugPrint('📱 Can schedule exact notifications: $canScheduleExactNotifications');
+        
+        if (canScheduleExactNotifications == false) {
+          debugPrint('⚠️ Exact alarm permission not granted - this is critical for Pixel devices!');
+          debugPrint('💡 User needs to manually enable: Settings > Apps > MedMind > Special access > Alarms & reminders');
+          
+          final bool? granted = await androidImplementation.requestExactAlarmsPermission();
+          debugPrint('📱 Exact alarm permission requested, granted: $granted');
+          
+          if (granted != true) {
+            debugPrint('❌ CRITICAL: Exact alarm permission denied - scheduled notifications will not work reliably on this device');
+          }
+          
+          return granted ?? false;
+        }
+        return canScheduleExactNotifications ?? false;
+      }
+      return true; // iOS doesn't need exact alarm permissions
+    } catch (e) {
+      debugPrint('❌ Error requesting exact alarm permissions: $e');
+      debugPrint('💡 This might be a device-specific issue. Try manually enabling exact alarms in device settings.');
+      return false;
+    }
+  }
+
+  /// Check if notifications are allowed
+  Future<bool> areNotificationsAllowed() async {
+    try {
+      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+
+      if (androidImplementation != null) {
+        final bool? granted = await androidImplementation.areNotificationsEnabled();
+        return granted ?? false;
+      }
+      return true; // Assume iOS permissions are granted
+    } catch (e) {
+      debugPrint('❌ Error checking notification permissions: $e');
+      return false;
+    }
+  }
+
+  /// Check if exact alarms are allowed
+  Future<bool> canScheduleExactAlarms() async {
+    try {
+      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+
+      if (androidImplementation != null) {
+        final bool? canSchedule = await androidImplementation.canScheduleExactNotifications();
+        return canSchedule ?? false;
+      }
+      return true; // iOS doesn't need exact alarm permissions
+    } catch (e) {
+      debugPrint('❌ Error checking exact alarm permissions: $e');
+      return false;
+    }
+  }
+
+  /// Comprehensive device compatibility check for Pixel devices
+  Future<Map<String, dynamic>> checkDeviceCompatibility() async {
+    final results = <String, dynamic>{};
+    
+    try {
+      // Basic permission checks
+      results['notifications_enabled'] = await areNotificationsAllowed();
+      results['exact_alarms_enabled'] = await canScheduleExactAlarms();
+      
+      // Check timezone setup
+      results['timezone_name'] = tz.local.name;
+      results['timezone_offset'] = tz.local.currentTimeZone.offset;
+      
+      // Check pending notifications count
+      final pending = await getAllScheduledNotifications();
+      results['pending_count'] = pending.length;
+      
+      // Device-specific warnings for Pixel 3a
+      final warnings = <String>[];
+      
+      if (results['notifications_enabled'] != true) {
+        warnings.add('Notifications are disabled - enable in Settings > Apps > MedMind > Notifications');
+      }
+      
+      if (results['exact_alarms_enabled'] != true) {
+        warnings.add('Exact alarms disabled - critical for Pixel devices. Enable in Settings > Apps > MedMind > Special access > Alarms & reminders');
+      }
+      
+      // Add Pixel-specific warnings
+      warnings.add('Pixel 3a users: Disable battery optimization in Settings > Apps > MedMind > Battery > Don\'t optimize');
+      warnings.add('Check Do Not Disturb settings - may block notifications even with permissions');
+      warnings.add('Ensure app is not in "Sleeping apps" list in device care settings');
+      
+      results['warnings'] = warnings;
+      results['device_optimized'] = warnings.length <= 3; // Only generic warnings
+      
+      return results;
+      
+    } catch (e) {
+      debugPrint('❌ Error checking device compatibility: $e');
+      results['error'] = e.toString();
+      return results;
+    }
+  }
+
+  /// Schedule daily medicine reminder notifications
   Future<void> scheduleDailyReminderForProfile({
     required String medId,
     required String medName,
-    required String time,
-    required String label,
-    required String beforeAfter,
+    required String time, // Format: "HH:mm"
+    required String label, // e.g., "Morning", "Evening"
+    required String beforeAfter, // "Before" or "After"
     required String profileId,
     required String profileName,
+    required DateTime startDate,
+    required DateTime endDate,
   }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    try {
+      // Check permissions first
+      final notificationsAllowed = await areNotificationsAllowed();
+      final exactAlarmsAllowed = await canScheduleExactAlarms();
+      
+      debugPrint('🔔 Scheduling notification for $medName at $time');
+      debugPrint('📱 Notifications allowed: $notificationsAllowed');
+      debugPrint('⏰ Exact alarms allowed: $exactAlarmsAllowed');
+      
+      if (!notificationsAllowed) {
+        debugPrint('❌ Notifications not allowed, requesting permission...');
+        await _requestPermissions();
+      }
+      
+      if (!exactAlarmsAllowed) {
+        debugPrint('❌ Exact alarms not allowed, requesting permission...');
+        await _requestExactAlarmPermission();
+      }
 
-    final scheduleDate = _nextInstanceOf(time);
-    final notifId = (medId + label + profileId).hashCode % 1000000;
+      // Parse time string to get hour and minute
+      final timeParts = time.split(':');
+      final hour = int.parse(timeParts[0]);
+      final minute = int.parse(timeParts[1]);
 
-    final notifData = {
-      'medicineId': medId,
-      'medName': medName,
-      'label': label,
-      'beforeAfter': beforeAfter,
-      'time': time,
-      'scheduledAt': Timestamp.fromDate(scheduleDate),
-      'status': 'pending',
-      'notificationId': notifId,
-      'type': 'dose',
-      'userId': uid,
-      'profileId': profileId,
-      'profileName': profileName,
-      'createdAt': FieldValue.serverTimestamp(),
-    };
+      // Create unique notification ID
+      final notificationId = _generateNotificationId(medId, time);
 
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('notifications')
-        .doc(notifId.toString())
-        .set(notifData);
+      // Create notification details
+      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        'medicine_reminders',
+        'Medicine Reminders',
+        channelDescription: 'Notifications for medicine taking times',
+        importance: Importance.max,
+        priority: Priority.max,
+        showWhen: true,
+        enableVibration: true,
+        playSound: true,
+        icon: '@mipmap/ic_launcher',
+      );
 
-    await scheduleNotificationFromData(notifData);
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        sound: 'default.wav',
+      );
+
+      const NotificationDetails platformDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
+
+      // Schedule daily notification from start date to end date
+      DateTime currentDate = startDate;
+      int dayCount = 0;
+      int successCount = 0;
+      
+      while (currentDate.isBefore(endDate) || currentDate.isAtSameMomentAs(endDate)) {
+        final scheduledDateTime = tz.TZDateTime(
+          tz.local,
+          currentDate.year,
+          currentDate.month,
+          currentDate.day,
+          hour,
+          minute,
+        );
+
+        // Only schedule if the time is in the future
+        if (scheduledDateTime.isAfter(tz.TZDateTime.now(tz.local))) {
+          try {
+            // Choose schedule mode based on exact alarm permission
+            // For Pixel devices, prefer exact modes for better reliability
+            AndroidScheduleMode scheduleMode;
+            if (exactAlarmsAllowed) {
+              scheduleMode = AndroidScheduleMode.exactAllowWhileIdle;
+            } else {
+              debugPrint('⚠️ Using inexact mode - notifications may be delayed on Pixel devices');
+              scheduleMode = AndroidScheduleMode.inexactAllowWhileIdle;
+            }
+            
+            debugPrint('📅 Scheduling for ${scheduledDateTime.toString()} with mode: $scheduleMode');
+            debugPrint('🕐 Time until notification: ${scheduledDateTime.difference(tz.TZDateTime.now(tz.local)).inMinutes} minutes');
+            
+            await flutterLocalNotificationsPlugin.zonedSchedule(
+              notificationId + dayCount, // Unique ID for each day
+              '💊 Time for your medicine!',
+              '$profileName, it\'s time to take $medName ($label - $beforeAfter meal)',
+              scheduledDateTime,
+              platformDetails,
+              androidScheduleMode: scheduleMode,
+              uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+              payload: 'medicine_reminder|$medId|$medName|$profileId|$profileName|$time|$label|$beforeAfter',
+            );
+            
+            successCount++;
+            debugPrint('✅ Scheduled notification ${notificationId + dayCount} for ${scheduledDateTime.toString()}');
+            
+            // Add a small delay between scheduling to avoid overwhelming the system
+            await Future.delayed(const Duration(milliseconds: 10));
+            
+          } catch (e) {
+            debugPrint('❌ Failed to schedule notification for ${scheduledDateTime.toString()}: $e');
+            debugPrint('💡 This might be due to device restrictions or battery optimization');
+          }
+        } else {
+          debugPrint('⏭️ Skipping past time: ${scheduledDateTime.toString()}');
+        }
+
+        currentDate = currentDate.add(const Duration(days: 1));
+        dayCount++;
+      }
+      
+      debugPrint('📊 Scheduling summary: $successCount/$dayCount notifications scheduled successfully');
+      if (successCount < dayCount) {
+        debugPrint('⚠️ Some notifications failed to schedule. Check device settings and permissions.');
+      }
+
+      if (successCount > 0) {
+        debugPrint('✅ Scheduled $successCount daily reminders for $medName at $time ($label)');
+      } else {
+        debugPrint('❌ Failed to schedule any notifications for $medName');
+        throw Exception('Failed to schedule notifications. Check device settings and permissions.');
+      }
+    } catch (e) {
+      debugPrint('❌ Error scheduling daily reminder: $e');
+      debugPrint('🔧 Troubleshooting tips:');
+      debugPrint('   1. Check if notifications are enabled for this app');
+      debugPrint('   2. Disable battery optimization for MedMind');
+      debugPrint('   3. Enable exact alarms permission');
+      debugPrint('   4. Check Do Not Disturb settings');
+      rethrow;
+    }
   }
 
-  /// Snooze reminder
-  Future<int> scheduleSnooze({
-    required String medId,
-    required String medName,
-    required String time,
-    required String label,
-    required String beforeAfter,
-    int minutes = 10,
-  }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return -1;
-
-    final schedule = DateTime.now().add(Duration(minutes: minutes));
-    final id = DateTime.now().millisecondsSinceEpoch % 1000000;
-
-    final notifData = {
-      'medicineId': medId,
-      'medName': medName,
-      'label': label,
-      'beforeAfter': beforeAfter,
-      'time': time,
-      'scheduledAt': Timestamp.fromDate(schedule),
-      'status': 'pending',
-      'notificationId': id,
-      'type': 'snooze',
-      'userId': uid,
-      'createdAt': FieldValue.serverTimestamp(),
-    };
-
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('notifications')
-        .doc(id.toString())
-        .set(notifData);
-
-    await scheduleNotificationFromData(notifData);
-    return id;
-  }
-
-  /// Low stock alert
+  /// Schedule low stock notification
   Future<void> scheduleLowStockNotification({
     required String medId,
     required String medName,
@@ -339,236 +381,392 @@ class NotificationService {
     required int stockThreshold,
     int delaySeconds = 5,
   }) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    final notifId = medId.hashCode ^ 9999;
-    final scheduled = DateTime.now().add(Duration(seconds: delaySeconds));
-
-    final notifData = {
-      'medicineId': medId,
-      'medName': medName,
-      'title': 'Low Stock Alert',
-      'body': 'Your medicine "$medName" is running low (≤ $stockThreshold left)',
-      'notificationId': notifId,
-      'status': 'pending',
-      'type': 'low_stock',
-      'userId': uid,
-      'profileId': profileId,
-      'profileName': profileName,
-      'createdAt': FieldValue.serverTimestamp(),
-      'scheduledAt': Timestamp.fromDate(scheduled),
-    };
-
-    await FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('notifications')
-        .doc(notifId.toString())
-        .set(notifData);
-
-    await scheduleNotificationFromData(notifData);
-  }
-
-  /// Log dose
-  Future<void> logDose(String uid, String medId, String status, String source,
-      {required String? medName, String? profileId}) async {
-    final medRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('medicines')
-        .doc(medId);
-    final logRef = medRef.collection('logs').doc();
-
-    await logRef.set({
-      'medicineId': medId,
-      'status': status,
-      'respondedAt': FieldValue.serverTimestamp(),
-      'userId': uid,
-      'source': source,
-      'medName': medName,
-      'profileId': profileId,
-    });
-  }
-
-  /// Notification response handler
-  Future<void> _onNotificationResponse(NotificationResponse response) async {
-    if (response.payload == null) return;
-
-    Map<String, dynamic> data = {};
     try {
-      data = jsonDecode(response.payload!) as Map<String, dynamic>;
-    } catch (_) {}
+      final notificationId = _generateLowStockNotificationId(medId);
 
-    final medId = data['medicineId']?.toString();
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null || medId == null) return;
-
-    final actionId = (response.actionId ?? '').toUpperCase();
-
-    if (actionId == 'TAKEN') {
-      await _handleTaken(uid, medId, data);
-    } else if (actionId == 'MISSED') {
-      await _handleMissed(uid, medId, data);
-    } else if (actionId == 'SNOOZE') {
-      await scheduleSnooze(
-        medId: medId,
-        medName: data['medName'] ?? '',
-        time: data['time'] ?? '',
-        label: data['label'] ?? '',
-        beforeAfter: data['beforeAfter'] ?? '',
-        minutes: 10,
+      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        'low_stock_alerts',
+        'Low Stock Alerts',
+        channelDescription: 'Notifications when medicine stock is running low',
+        importance: Importance.high,
+        priority: Priority.high,
+        showWhen: true,
+        enableVibration: true,
+        playSound: true,
+        icon: '@mipmap/ic_launcher',
       );
-    }
 
-    // Cancel notification
-    try {
-      final nid = data['notificationId'] as int?;
-      if (nid != null) await _fln.cancel(nid);
-    } catch (_) {}
-  }
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        sound: 'default.wav',
+      );
 
-  Future<void> _handleTaken(String uid, String medId, Map<String, dynamic> data) async {
-    await logDose(uid, medId, 'taken', 'notification',
-        medName: data['medName'], profileId: data['profileId']?.toString());
+      const NotificationDetails platformDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
 
-    final medRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('medicines')
-        .doc(medId);
+      final scheduledDate = tz.TZDateTime.now(tz.local).add(Duration(seconds: delaySeconds));
+      
+      // Check permissions and choose appropriate schedule mode
+      final exactAlarmsAllowed = await canScheduleExactAlarms();
+      final scheduleMode = exactAlarmsAllowed 
+          ? AndroidScheduleMode.exactAllowWhileIdle 
+          : AndroidScheduleMode.inexactAllowWhileIdle;
 
-    try {
-      await FirebaseFirestore.instance.runTransaction((tx) async {
-        final snap = await tx.get(medRef);
-        if (!snap.exists) return;
-        final current = (snap.data()?['stock'] as num?)?.toInt() ?? 0;
-        final lowAlert = (snap.data()?['lowStockAlert'] as num?)?.toInt() ?? 0;
-        final newStock = (current > 0) ? current - 1 : 0;
-        tx.update(medRef, {'stock': newStock});
+      debugPrint('📅 Scheduling low stock alert for ${scheduledDate.toString()} with mode: $scheduleMode');
 
-        if (newStock <= lowAlert && newStock > 0) {
-          await scheduleLowStockNotification(
-            medId: medId,
-            medName: data['medName'] ?? '',
-            profileId: data['profileId']?.toString() ?? 'self',
-            profileName: data['profileName']?.toString() ?? 'Self',
-            stockThreshold: lowAlert,
-          );
-        }
-      });
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        notificationId,
+        '⚠️ Low Stock Alert',
+        '$profileName, your $medName is running low! Only $stockThreshold left.',
+        scheduledDate,
+        platformDetails,
+        androidScheduleMode: scheduleMode,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'low_stock_alert|$medId|$medName|$profileId|$profileName|$stockThreshold',
+      );
+
+      debugPrint('✅ Scheduled low stock alert for $medName (threshold: $stockThreshold)');
     } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ Stock decrement failed: $e');
+      debugPrint('❌ Error scheduling low stock notification: $e');
+      rethrow;
     }
+  }
 
+  /// Show immediate notification for testing
+  Future<void> showNotification(int id, String title, String body) async {
     try {
-      final nid = data['notificationId'] as int?;
-      if (nid != null) {
-        final docRef = FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .collection('notifications')
-            .doc(nid.toString());
-        final doc = await docRef.get();
-        if (doc.exists) {
-          await docRef.update({'status': 'responded', 'respondedAt': FieldValue.serverTimestamp()});
-        }
-      }
-    } catch (_) {}
-  }
+      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        'main_channel',
+        'Main Channel',
+        channelDescription: 'Main notification channel',
+        importance: Importance.max,
+        priority: Priority.max,
+        showWhen: true,
+        enableVibration: true,
+        playSound: true,
+        icon: '@mipmap/ic_launcher',
+      );
 
-  Future<void> _handleMissed(String uid, String medId, Map<String, dynamic> data) async {
-    await logDose(uid, medId, 'missed', 'notification',
-        medName: data['medName'], profileId: data['profileId']?.toString());
-    try {
-      final nid = data['notificationId'] as int?;
-      if (nid != null) {
-        final docRef = FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .collection('notifications')
-            .doc(nid.toString());
-        final doc = await docRef.get();
-        if (doc.exists) {
-          await docRef.update({'status': 'missed', 'respondedAt': FieldValue.serverTimestamp()});
-        }
-      }
-    } catch (_) {}
-  }
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+        sound: 'default.wav',
+      );
 
-  /// Periodic missed check
-  void _startPeriodicMissChecker() {
-    _missCheckerTimer?.cancel();
-    _missCheckerTimer = Timer.periodic(const Duration(seconds: 60), (_) => _markMissedReminders());
-  }
+      const NotificationDetails platformDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
 
-  Future<void> _markMissedOnInit() async {
-    await Future.delayed(const Duration(milliseconds: 200));
-    await _markMissedReminders();
-  }
+      await flutterLocalNotificationsPlugin.show(
+        id,
+        title,
+        body,
+        platformDetails,
+      );
 
-  Future<void> _markMissedReminders() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
-    try {
-      final q = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('notifications')
-          .where('status', isEqualTo: 'pending')
-          .where('type', isEqualTo: 'dose')
-          .where('scheduledAt', isLessThanOrEqualTo: Timestamp.fromDate(cutoff))
-          .get();
-
-      for (final doc in q.docs) {
-        final data = doc.data();
-        final nid = data['notificationId'] as int?;
-        final medId = data['medicineId']?.toString();
-        if (nid == null || medId == null) continue;
-
-        await doc.reference.update({'status': 'missed', 'respondedAt': FieldValue.serverTimestamp()});
-        await logDose(uid, medId, 'missed', 'system', medName: data['medName'], profileId: data['profileId']?.toString());
-
-        try {
-          await _fln.cancel(nid);
-        } catch (_) {}
-      }
+      debugPrint('✅ Showed immediate notification: $title');
     } catch (e) {
-      if (kDebugMode) debugPrint('⚠️ markMissedReminders error: $e');
+      debugPrint('❌ Error showing immediate notification: $e');
     }
   }
 
-  /// Compute next DateTime from "HH:mm"
-  DateTime _nextInstanceOf(String time) {
-    try {
-      final parts = time.split(':');
-      final hour = int.tryParse(parts[0]) ?? 0;
-      final minute = int.tryParse(parts[1]) ?? 0;
-      final now = tz.TZDateTime.now(tz.local);
-      var scheduled = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
-      if (scheduled.isBefore(now)) scheduled = scheduled.add(const Duration(days: 1));
-      return scheduled.toLocal();
-    } catch (_) {
-      return DateTime.now().add(const Duration(seconds: 5));
-    }
-  }
-
-  /// Test notification helper
-  Future<void> showTestNotification() async {
-    final id = DateTime.now().millisecondsSinceEpoch % 1000000;
-    await _fln.show(
-      id,
-      'Test Notification',
-      'This is a test medicine reminder',
-      NotificationDetails(
-        android: AndroidNotificationDetails('med_channel', 'Medicine reminders'),
-        iOS: DarwinNotificationDetails(),
-      ),
-      payload: jsonEncode({'test': true}),
+  /// Show immediate notification (alternative method)
+  Future<void> showImmediateNotification({
+    required String title,
+    required String body,
+    String? payload,
+  }) async {
+    await showNotification(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      title,
+      body,
     );
   }
 
-  void dispose() => _missCheckerTimer?.cancel();
+  /// Cancel all notifications for a specific medicine
+  Future<void> cancelMedicineNotifications(String medId) async {
+    try {
+      final pendingNotifications = await flutterLocalNotificationsPlugin.pendingNotificationRequests();
+      
+      for (final notification in pendingNotifications) {
+        final payload = notification.payload;
+        if (payload != null && payload.contains(medId)) {
+          await flutterLocalNotificationsPlugin.cancel(notification.id);
+          debugPrint('✅ Cancelled notification ${notification.id} for medicine $medId');
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Error cancelling medicine notifications: $e');
+    }
+  }
+
+  /// Cancel low stock notification for a specific medicine
+  Future<void> cancelLowStockNotification(String medId) async {
+    try {
+      final notificationId = _generateLowStockNotificationId(medId);
+      await flutterLocalNotificationsPlugin.cancel(notificationId);
+      debugPrint('✅ Cancelled low stock notification for medicine $medId');
+    } catch (e) {
+      debugPrint('❌ Error cancelling low stock notification: $e');
+    }
+  }
+
+  /// Get all scheduled notifications
+  Future<List<PendingNotificationRequest>> getAllScheduledNotifications() async {
+    try {
+      return await flutterLocalNotificationsPlugin.pendingNotificationRequests();
+    } catch (e) {
+      debugPrint('❌ Error getting scheduled notifications: $e');
+      return [];
+    }
+  }
+
+  /// Cancel all notifications
+  Future<void> cancelAllNotifications() async {
+    try {
+      await flutterLocalNotificationsPlugin.cancelAll();
+      debugPrint('✅ Cancelled all notifications');
+    } catch (e) {
+      debugPrint('❌ Error cancelling all notifications: $e');
+    }
+  }
+
+  /// Generate unique notification ID for medicine reminders
+  int _generateNotificationId(String medId, String time) {
+    final combined = '$medId-$time';
+    return combined.hashCode.abs().remainder(2147483647);
+  }
+
+  /// Generate unique notification ID for low stock alerts
+  int _generateLowStockNotificationId(String medId) {
+    final combined = '$medId-lowstock';
+    return combined.hashCode.abs().remainder(2147483647);
+  }
+
+  /// Simple schedule notification method similar to working app
+  Future<void> scheduleNotification({
+    required int id,
+    required String title,
+    required String body,
+    required DateTime scheduledDate,
+  }) async {
+    await flutterLocalNotificationsPlugin.zonedSchedule(
+      id,
+      title,
+      body,
+      tz.TZDateTime.from(scheduledDate, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'scheduled_channel',
+          'Scheduled Notifications',
+          channelDescription: 'Channel for scheduled notifications',
+          importance: Importance.max,
+          priority: Priority.max,
+        ),
+        iOS: DarwinNotificationDetails(
+          sound: 'default.wav',
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+    );
+  }
+
+  /// Cancel notification by ID
+  Future<void> cancelNotification(int id) async {
+    await flutterLocalNotificationsPlugin.cancel(id);
+  }
+
+  /// Set up notification listeners (for compatibility)
+  static void setupListeners() {
+    // Flutter Local Notifications handles listeners during initialization
+    debugPrint('✅ Notification listeners setup complete');
+  }
+
+  /// Schedule a test notification at a specific time today (for testing purposes)
+  Future<void> scheduleTestNotificationAtTime({
+    required String time, // Format: "HH:mm"
+    bool allowPastTime = false,
+    String title = '🧪 Time-Based Test',
+    String? body,
+  }) async {
+    try {
+      final timeParts = time.split(':');
+      final hour = int.parse(timeParts[0]);
+      final minute = int.parse(timeParts[1]);
+      
+      final now = tz.TZDateTime.now(tz.local);
+      var scheduledDateTime = tz.TZDateTime(
+        tz.local,
+        now.year,
+        now.month,
+        now.day,
+        hour,
+        minute,
+      );
+      
+      // If time has passed and allowPastTime is false, schedule for tomorrow
+      if (!allowPastTime && scheduledDateTime.isBefore(now)) {
+        scheduledDateTime = scheduledDateTime.add(const Duration(days: 1));
+      }
+      
+      body ??= 'Test notification scheduled for $time';
+      
+      const androidDetails = AndroidNotificationDetails(
+        'test_time_channel',
+        'Test Time Notifications',
+        channelDescription: 'Time-based test notifications',
+        importance: Importance.max,
+        priority: Priority.max,
+        showWhen: true,
+        enableVibration: true,
+        playSound: true,
+        icon: '@mipmap/ic_launcher',
+      );
+
+      const platformDetails = NotificationDetails(android: androidDetails);
+      
+      final exactAlarmsAllowed = await canScheduleExactAlarms();
+      final scheduleMode = exactAlarmsAllowed 
+          ? AndroidScheduleMode.exactAllowWhileIdle 
+          : AndroidScheduleMode.inexactAllowWhileIdle;
+
+      final testId = DateTime.now().millisecondsSinceEpoch.remainder(100000);
+      final minutesUntil = scheduledDateTime.difference(now).inMinutes;
+      
+      debugPrint('🧪 Scheduling time-based test for ${scheduledDateTime.toString()}');
+      debugPrint('⏰ Target time: $time');
+      debugPrint('📱 Schedule mode: $scheduleMode');
+      debugPrint('🕐 Time until notification: $minutesUntil minutes');
+      debugPrint('📅 Date: ${scheduledDateTime.day == now.day ? "Today" : "Tomorrow"}');
+
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        testId,
+        title,
+        body,
+        scheduledDateTime,
+        platformDetails,
+        androidScheduleMode: scheduleMode,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'test_time_notification|$testId|$time',
+      );
+
+      debugPrint('✅ Time-based test notification scheduled successfully (ID: $testId)');
+    } catch (e) {
+      debugPrint('❌ Failed to schedule time-based test notification: $e');
+      rethrow;
+    }
+  }
+
+  /// Schedule a test notification for X seconds from now (for testing purposes)
+  Future<void> scheduleTestNotification({
+    required int delaySeconds,
+    String title = '🧪 Test Notification',
+    String? body,
+  }) async {
+    try {
+      final testId = DateTime.now().millisecondsSinceEpoch.remainder(100000);
+      final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(seconds: delaySeconds));
+      
+      body ??= 'This test notification was scheduled for $delaySeconds seconds from now';
+      
+      const androidDetails = AndroidNotificationDetails(
+        'test_channel',
+        'Test Notifications',
+        channelDescription: 'Test notifications for debugging',
+        importance: Importance.max,
+        priority: Priority.max,
+        showWhen: true,
+        enableVibration: true,
+        playSound: true,
+        icon: '@mipmap/ic_launcher',
+      );
+
+      const platformDetails = NotificationDetails(android: androidDetails);
+      
+      // Check permissions and choose appropriate schedule mode
+      final exactAlarmsAllowed = await canScheduleExactAlarms();
+      final scheduleMode = exactAlarmsAllowed 
+          ? AndroidScheduleMode.exactAllowWhileIdle 
+          : AndroidScheduleMode.inexactAllowWhileIdle;
+
+      debugPrint('🧪 Scheduling test notification for ${scheduledTime.toString()}');
+      debugPrint('⏰ Delay: $delaySeconds seconds');
+      debugPrint('📱 Schedule mode: $scheduleMode');
+      debugPrint('🕐 Time until notification: ${scheduledTime.difference(tz.TZDateTime.now(tz.local)).inSeconds} seconds');
+
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        testId,
+        title,
+        body,
+        scheduledTime,
+        platformDetails,
+        androidScheduleMode: scheduleMode,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'test_notification|$testId|$delaySeconds',
+      );
+
+      debugPrint('✅ Test notification scheduled successfully (ID: $testId)');
+    } catch (e) {
+      debugPrint('❌ Failed to schedule test notification: $e');
+      rethrow;
+    }
+  }
+
+  /// Print comprehensive troubleshooting guide for Pixel 3a
+  static void printPixelTroubleshootingGuide() {
+    debugPrint('\n' + '=' * 60);
+    debugPrint('📱 PIXEL 3A NOTIFICATION TROUBLESHOOTING GUIDE');
+    debugPrint('=' * 60);
+    debugPrint('');
+    debugPrint('🔧 CRITICAL SETTINGS TO CHECK:');
+    debugPrint('');
+    debugPrint('1. 📱 App Notifications:');
+    debugPrint('   Settings > Apps > MedMind > Notifications');
+    debugPrint('   → Enable "Show notifications"');
+    debugPrint('   → Enable all notification categories');
+    debugPrint('');
+    debugPrint('2. ⏰ Exact Alarms (CRITICAL):');
+    debugPrint('   Settings > Apps > Special access > Alarms & reminders');
+    debugPrint('   → Find MedMind and enable "Allow setting alarms and reminders"');
+    debugPrint('');
+    debugPrint('3. 🔋 Battery Optimization:');
+    debugPrint('   Settings > Apps > MedMind > Battery');
+    debugPrint('   → Select "Don\'t optimize" or "Unrestricted"');
+    debugPrint('');
+    debugPrint('4. 🌙 Do Not Disturb:');
+    debugPrint('   Settings > Sound > Do Not Disturb');
+    debugPrint('   → Turn off or configure to allow MedMind notifications');
+    debugPrint('');
+    debugPrint('5. 💤 Sleeping Apps (if available):');
+    debugPrint('   Settings > Device care > Battery > Background app limits');
+    debugPrint('   → Remove MedMind from "Sleeping apps" or "Deep sleeping apps"');
+    debugPrint('');
+    debugPrint('6. 🔄 Additional Steps:');
+    debugPrint('   → Restart the device after making changes');
+    debugPrint('   → Clear MedMind app cache if issues persist');
+    debugPrint('   → Ensure Android System WebView is updated');
+    debugPrint('');
+    debugPrint('⚠️  PIXEL-SPECIFIC ISSUES:');
+    debugPrint('   → Pixel devices have aggressive battery management');
+    debugPrint('   → Android\'s "Adaptive Battery" may interfere');
+    debugPrint('   → Some notifications may be delayed by 5-15 minutes');
+    debugPrint('');
+    debugPrint('🧪 TESTING:');
+    debugPrint('   → Use the diagnostic screen to test notifications');
+    debugPrint('   → Schedule a test notification 1-2 minutes in the future');
+    debugPrint('   → Check if immediate notifications work first');
+    debugPrint('');
+    debugPrint('=' * 60 + '\n');
+  }
 }

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:medmind/screens/test_notification_screen.dart';
 import 'package:medmind/screens/user/medicine/add_medicine.dart';
 import '../../../core/constants.dart';
-import '../test_notification.dart';
+
 import 'medicine/medicine_list.dart';
 import 'activity_screen.dart';
 import 'notification_screen.dart';

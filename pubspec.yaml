@@ -42,11 +42,10 @@ dependencies:
   firebase_messaging: ^16.0.3
   firebase_storage: ^13.0.2
 
-  # Local Notifications & Timezone
-  flutter_local_notifications: ^19.4.2
-  timezone: ^0.10.1
+ 
+  flutter_timezone: ^3.0.1
   # UI & State Management
-  intl: ^0.20.2
+  intl: 
   provider: ^6.1.2
   table_calendar: ^3.1.2
 
@@ -54,6 +53,8 @@ dependencies:
   # Utilities
   permission_handler: ^12.0.1
   image_picker: ^1.1.2
+  flutter_local_notifications: ^17.0.0
+  timezone: ^0.9.2
 
   # Splash Screen (Keep dev dependency for this)
   flutter_native_splash: ^2.3.6

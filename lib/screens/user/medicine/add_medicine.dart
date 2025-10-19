@@ -1,7 +1,7 @@
 // lib/screens/user/medicine/add_medicine_screen.dart
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 import '../../../core/constants.dart';
 import '../../../models/medicine.dart';
 import '../../../services/notification_service.dart';
+import '../../../utils/debug_menu.dart';
 
 class AddMedicineScreen extends StatefulWidget {
   final Medicine? medicine;
@@ -287,53 +288,60 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
       // Save medicine in Firestore
       await docRef.set(med.toMap(), SetOptions(merge: true));
 
+      // Initialize and setup notifications
       final notifier = NotificationService();
-
-      // Schedule daily reminders
-      for (var t in med.times) {
-        try {
-          await notifier.scheduleDailyReminderForProfile(
-            medId: med.id,
-            medName: med.name,
-            time: t['time']!,
-            label: t['label']!,
-            beforeAfter: t['beforeAfter']!,
-            profileId: med.profileId,
-            profileName: med.profileName,
+      final notificationInitialized = await notifier.areNotificationsAllowed();
+      
+      if (!notificationInitialized) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("⚠️ Medicine saved but notifications disabled. Please enable notification permissions in settings."),
+              duration: Duration(seconds: 4),
+            ),
           );
-        } catch (e) {
-          debugPrint("Daily notification error: $e");
+        }
+      } else {
+        // Schedule daily reminders from start date to end date
+        int successfulSchedules = 0;
+        for (var t in med.times) {
+          try {
+            await notifier.scheduleDailyReminderForProfile(
+              medId: med.id,
+              medName: med.name,
+              time: t['time']!,
+              label: t['label']!,
+              beforeAfter: t['beforeAfter']!,
+              profileId: med.profileId,
+              profileName: med.profileName,
+              startDate: med.startDate,
+              endDate: med.endDate,
+            );
+            successfulSchedules++;
+          } catch (e) {
+            debugPrint("Daily notification error for ${t['label']}: $e");
+          }
+        }
+        
+        if (kDebugMode) {
+          debugPrint("✅ Scheduled $successfulSchedules/${med.times.length} notifications");
         }
       }
 
-      // Schedule low-stock notification if needed
-      if (med.lowStockAlert > 0 && med.stock > 0) {
+      // Schedule low-stock notification if needed (only if notifications are enabled)
+      if (notificationInitialized && med.lowStockAlert > 0 && med.stock > 0) {
         try {
-          final notifId = med.id.hashCode ^ 9999;
-
-          final notifData = {
-            'medicineId': med.id,
-            'medName': med.name,
-            'title': 'Low Stock Alert',
-            'body': 'Your medicine "${med.name}" is running low (${med.stock} left)',
-            'notificationId': notifId,
-            'status': 'pending',
-            'type': 'low_stock',
-            'userId': uid,
-            'profileId': med.profileId,
-            'profileName': med.profileName,
-            'scheduledAt': Timestamp.fromDate(DateTime.now().add(const Duration(seconds: 5))),
-            'createdAt': FieldValue.serverTimestamp(),
-          };
-
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(uid)
-              .collection('notifications')
-              .doc(notifId.toString())
-              .set(notifData);
-
-          await notifier.scheduleNotificationFromData(notifData);
+          await notifier.scheduleLowStockNotification(
+            medId: med.id,
+            medName: med.name,
+            profileId: med.profileId,
+            profileName: med.profileName,
+            stockThreshold: med.lowStockAlert,
+            delaySeconds: 5,
+          );
+          if (kDebugMode) {
+            debugPrint("✅ Low stock notification scheduled for ${med.name}");
+          }
         } catch (e) {
           debugPrint("Low-stock notification error: $e");
         }
@@ -361,6 +369,9 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
       appBar: AppBar(
         title: Text(isEdit ? "Edit Medicine" : "Add Medicine"),
         backgroundColor: AppColors.primary,
+        actions: [
+          if (kDebugMode) DebugMenu.createDebugAction(context),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
