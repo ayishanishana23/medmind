@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "7202403896",
+    "project_id": "medmind-9237c",
+    "storage_bucket": "medmind-9237c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:7202403896:android:bafd9f03a0997e0c64d8cd",
+        "android_client_info": {
+          "package_name": "com.ayisha.medmind"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBRss1e-8r8F301YqjSjVeQKZmSL3NqydQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
