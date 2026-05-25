@@ -31,15 +31,26 @@ MedMind is a **Flutter + Firebase-based mobile application** designed to help us
 
 ## 📱 App Screens 
 
-> Add screenshots in a folder like `/screenshots` and update links below
 
-| Home Screen | Add Medicine | Reminder Alert |
-|-------------|-------------|----------------|
-| ![](screenshots/user home.png) | ![](screenshots/add_medicine.png) | ![](screenshots/reminder.png) |
+### Home Screen 
 
----
+![User Home](screenshots/user_home.png)
 
- ## Developed By
+### Reminder Alert 
+
+![Add medicine](screenshots/add_medicine.png) 
+
+### Reminder Alert 
+
+![Reminder](screenshots/reminder.png) 
+
+### Login  
+
+![Login](screenshots/login.png) 
+
+
+
+## Developed By
 
 Ayisha Nishana KK  
  
